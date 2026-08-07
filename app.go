@@ -44,6 +44,15 @@ func newApp(in io.Reader, out, errOut io.Writer) *app {
 }
 
 func (a *app) run(args []string) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "completion":
+			return a.runCompletion(args[1:])
+		case "__complete-keys":
+			return a.runCompletionKeys(args[1:])
+		}
+	}
+
 	opts, err := parseOptions(args, "", a.errOut)
 	if errors.Is(err, flagHelpError()) {
 		return 0

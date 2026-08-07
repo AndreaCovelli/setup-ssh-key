@@ -29,6 +29,7 @@ Client Windows feature is installed.
 ```text
 setup-ssh-key [OPTIONS] user@host[:port]
 setup-ssh-key [OPTIONS] user@[IPv6-address][:port]
+setup-ssh-key completion <bash|zsh|fish|powershell>
 ```
 
 Examples:
@@ -54,6 +55,35 @@ matching cryptographic key is removed from the remote `authorized_keys` file,
 then the local private and public files are deleted. If the remote operation
 fails, the local pair remains unchanged. The local `.pub` file is required so
 the remote entry can be identified safely.
+
+The remote host's `known_hosts` entry is deliberately left unchanged. It
+records the server's identity rather than the user's authorization key, so
+removing it would weaken host-key verification for future connections.
+
+### Shell completion
+
+Enable dynamic key-name completion for the current shell session:
+
+```sh
+# Bash
+source <(setup-ssh-key completion bash)
+
+# Zsh
+source <(setup-ssh-key completion zsh)
+
+# Fish
+setup-ssh-key completion fish | source
+```
+
+For PowerShell:
+
+```powershell
+setup-ssh-key completion powershell | Out-String | Invoke-Expression
+```
+
+After activation, pressing Tab after `setup-ssh-key --delete -k` suggests valid
+local public-key stems from `KEY_DIR` or `~/.ssh`. Add the activation command to
+the appropriate shell profile to persist it across sessions.
 
 ## Develop
 

@@ -41,6 +41,7 @@ func printUsage(out io.Writer) {
   %s [OPTIONS] user@host[:port]
   %s [OPTIONS] user@[IPv6-address][:port]
   %s --delete [-k <name>] user@host[:port]
+  %s completion <bash|zsh|fish|powershell>
 
 Options:
   -k <name>   Key filename stem (default: <host>_from_<client>)
@@ -59,7 +60,8 @@ Examples:
   %s -k deploy_key -i deploy@ci-host
   %s 'alice@[2001:db8::10]:2222'
   %s --delete -k deploy_key deploy@ci-host
-`, programName(), programName(), programName(), programName(), programName(), programName(), programName(), programName())
+  %s completion bash
+`, programName(), programName(), programName(), programName(), programName(), programName(), programName(), programName(), programName(), programName())
 }
 
 func (a *app) confirm(prompt string, defaultYes bool) bool {

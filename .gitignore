@@ -1,6 +1,26 @@
+# Build and release artifacts
 /setup-ssh-key
 /setup-ssh-key.exe
 /dist/
+*.exe
 *.test
 
-.agents/
+# Test, coverage, and profiling output
+*.coverprofile
+coverage*.out
+*.prof
+
+# Local development configuration
+.mise.local.toml
+
+# Locally installed agent skills (definitions live in skills-lock.json)
+/.agents/
+
+# Editor temporary files
+*.swp
+*.swo
+*~
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db

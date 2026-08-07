@@ -1,0 +1,275 @@
+package main
+
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"os/user"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
+)
+
+var errUsage = errors.New("usage")
+
+type app struct {
+	in        *bufio.Reader
+	commandIn io.Reader
+	out       io.Writer
+	errOut    io.Writer
+	colors    palette
+	runner    commandRunner
+}
+
+func newApp(in io.Reader, out, errOut io.Writer) *app {
+	return &app{
+		in:        bufio.NewReader(in),
+		commandIn: in,
+		out:       out,
+		errOut:    errOut,
+		colors:    colorsFor(out),
+		runner:    systemRunner{},
+	}
+}
+
+func (a *app) run(args []string) int {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return a.fail("could not determine the home directory: %v", err)
+	}
+	opts, err := parseOptions(args, home, a.errOut)
+	if errors.Is(err, flagHelpError()) {
+		return 0
+	}
+	if errors.Is(err, errUsage) {
+		printUsage(a.errOut)
+		return 2
+	}
+	if err != nil {
+		return a.fail("%v", err)
+	}
+
+	localHost, err := os.Hostname()
+	if err != nil || localHost == "" {
+		return a.fail("could not determine the local hostname")
+	}
+	if before, _, found := strings.Cut(localHost, "."); found {
+		localHost = before
+	}
+	if localHost == "" {
+		return a.fail("could not determine the local hostname")
+	}
+	if opts.comment == "" {
+		localUser, err := currentUsername()
+		if err != nil {
+			return a.fail("could not determine the local user: %v", err)
+		}
+		opts.comment = localUser + "@" + localHost
+	}
+	if opts.keyName == "" {
+		opts.keyName = defaultKeyName(opts.target.host, localHost)
+	}
+	if err := validateKeyName(opts.keyName); err != nil {
+		return a.fail("%v", err)
+	}
+
+	if opts.keyBits < 0 {
+		a.warn("ed25519 does not use -b; ignoring it.")
+		opts.keyBits = 0
+	}
+	if opts.emptyPassword {
+		a.warn("You requested a key with no passphrase.")
+		a.warn("Anyone who obtains the private key file will have immediate access.")
+		fmt.Fprintln(a.out)
+		if !a.confirm("Confirm empty passphrase? [y/N]:", false) {
+			return a.fail("aborted; re-run without -i to set a passphrase")
+		}
+	}
+
+	for _, command := range []string{"ssh-keygen", "ssh"} {
+		if _, err := a.runner.lookPath(command); err != nil {
+			return a.fail("%q not found; install OpenSSH and ensure it is on PATH", command)
+		}
+	}
+	if err := os.MkdirAll(opts.keyDir, 0o700); err != nil {
+		return a.fail("create key directory %q: %v", opts.keyDir, err)
+	}
+	if err := os.Chmod(opts.keyDir, 0o700); err != nil {
+		return a.fail("secure key directory %q: %v", opts.keyDir, err)
+	}
+
+	keyPath := filepath.Join(opts.keyDir, opts.keyName)
+	a.header("══ SSH Key Setup ══════════════════════════════════════")
+	a.info("Key type   : %s%s", opts.keyType, bitSuffix(opts.keyBits))
+	a.info("Key path   : %s", keyPath)
+	a.info("Remote     : %s:%d", opts.target.destination, opts.target.port)
+	a.info("Comment    : %s", opts.comment)
+	fmt.Fprintln(a.out)
+
+	backups := newKeyBackups(keyPath)
+	if err := backups.rejectDirectories(); err != nil {
+		return a.fail("%v", err)
+	}
+	exists, err := backups.anyKeyExists()
+	if err != nil {
+		return a.fail("%v", err)
+	}
+	if exists {
+		a.warn("A private or public key already exists at %q.", keyPath)
+		if !a.confirm("Back it up and replace it? [y/N]:", false) {
+			a.info("Aborted.")
+			return 0
+		}
+		if err := backups.moveAside(time.Now(), os.Getpid()); err != nil {
+			return a.fail("could not back up the existing key files: %v", err)
+		}
+		a.info("Existing key files were moved to unique timestamped backups.")
+	}
+
+	keygenArgs := []string{"-t", opts.keyType, "-C", opts.comment, "-f", keyPath}
+	if opts.keyBits > 0 {
+		keygenArgs = append(keygenArgs, "-b", strconv.Itoa(opts.keyBits))
+	}
+	if opts.emptyPassword {
+		keygenArgs = append(keygenArgs, "-N", "")
+	}
+
+	a.info("Generating SSH key pair…")
+	signalChannel := make(chan os.Signal, 1)
+	signal.Notify(signalChannel, generationSignals()...)
+	generationErr := a.runner.run("ssh-keygen", keygenArgs, a.commandIn, a.out, a.errOut)
+	signal.Stop(signalChannel)
+	var interrupted os.Signal
+	select {
+	case interrupted = <-signalChannel:
+	default:
+	}
+	if generationErr != nil || interrupted != nil {
+		if restoreErr := backups.restore(true); restoreErr != nil {
+			return a.fail("ssh-keygen failed and the previous key pair could not be fully restored: %v", restoreErr)
+		}
+		if interrupted != nil {
+			a.warn("Interrupted; rolled back key generation and restored any previous key pair.")
+			if interrupted == os.Interrupt {
+				return 130
+			}
+			return 143
+		}
+		return a.fail("ssh-keygen failed; restored any previous key pair")
+	}
+	if err := os.Chmod(keyPath, 0o600); err != nil {
+		return a.fail("set private-key permissions: %v", err)
+	}
+	if err := os.Chmod(keyPath+".pub", 0o644); err != nil {
+		return a.fail("set public-key permissions: %v", err)
+	}
+
+	a.success("Key pair created:")
+	fmt.Fprintf(a.out, "  Private : %s\n  Public  : %s\n\n", keyPath, keyPath+".pub")
+
+	if err := a.installPublicKey(keyPath+".pub", opts.target); err != nil {
+		return a.fail("public-key installation failed; the local key remains at %q: %v", keyPath, err)
+	}
+	a.success("Public key installed on the remote host.")
+
+	fmt.Fprintln(a.out)
+	a.info("Verifying key-based login…")
+	verifyArgs := sshArgs(opts.target, "-v", "-i", keyPath,
+		"-o", "IdentitiesOnly=yes",
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=10",
+		"-o", "StrictHostKeyChecking=yes",
+		opts.target.destination, "true")
+	trace, verifyErr := a.runner.combinedOutput("ssh", verifyArgs)
+	accepted := "Server accepts key: " + keyPath + " "
+	if verifyErr == nil && strings.Contains(string(trace), accepted) {
+		a.success("Key-based login works.")
+	} else {
+		a.warn("Could not verify that the newly generated key was accepted.")
+		fmt.Fprintf(a.out, "  Try manually: ssh -i %s -p %d %s\n", quoteArgument(keyPath), opts.target.port, quoteArgument(opts.target.destination))
+	}
+
+	fmt.Fprintln(a.out)
+	if opts.emptyPassword {
+		a.info("No passphrase set; skipping ssh-agent (nothing to cache).")
+	} else if _, err := a.runner.lookPath("ssh-add"); err == nil && (os.Getenv("SSH_AUTH_SOCK") != "" || runtime.GOOS == "windows") {
+		if a.confirm("Add key to ssh-agent? [Y/n]:", true) {
+			if err := a.runner.run("ssh-add", []string{keyPath}, a.commandIn, a.out, a.errOut); err != nil {
+				a.warn("Failed to add the key to ssh-agent. You can try manually later.")
+			} else {
+				a.success("Key added to ssh-agent.")
+			}
+		}
+	} else {
+		a.info("ssh-agent not running; to add the key later: ssh-add %s", quoteArgument(keyPath))
+	}
+
+	fmt.Fprintln(a.out)
+	a.header("── Optional ~/.ssh/config entry ───────────────────────")
+	fmt.Fprintf(a.out, "Host %s\n    HostName     %s\n    User         %s\n", opts.target.host, opts.target.host, opts.target.user)
+	if opts.target.port != 22 {
+		fmt.Fprintf(a.out, "    Port         %d\n", opts.target.port)
+	}
+	fmt.Fprintf(a.out, "    IdentityFile \"%s\"\n", escapeConfigPath(keyPath))
+	fmt.Fprintf(a.out, "\n%s%sAll done!%s\n\n", a.colors.green, a.colors.bold, a.colors.reset)
+	return 0
+}
+
+func (a *app) installPublicKey(publicPath string, remote target) error {
+	key, err := os.Open(publicPath)
+	if err != nil {
+		return fmt.Errorf("open public key: %w", err)
+	}
+	defer key.Close()
+
+	a.info("Uploading public key to %s:%d…", remote.destination, remote.port)
+	a.info("You may be prompted for %s's remote password.", remote.user)
+	fmt.Fprintln(a.out)
+	remoteCommand := `umask 077; mkdir -p "$HOME/.ssh" && touch "$HOME/.ssh/authorized_keys" && chmod 700 "$HOME/.ssh" && chmod 600 "$HOME/.ssh/authorized_keys" && cat >> "$HOME/.ssh/authorized_keys"`
+	args := sshArgs(remote, remote.destination, remoteCommand)
+	return a.runner.run("ssh", args, key, a.out, a.errOut)
+}
+
+func sshArgs(remote target, rest ...string) []string {
+	args := []string{"-p", strconv.Itoa(remote.port)}
+	return append(args, rest...)
+}
+
+func currentUsername() (string, error) {
+	if current, err := user.Current(); err == nil && current.Username != "" {
+		name := current.Username
+		if slash := strings.LastIndexAny(name, `\\/`); slash >= 0 {
+			name = name[slash+1:]
+		}
+		return name, nil
+	}
+	for _, variable := range []string{"USER", "USERNAME"} {
+		if value := os.Getenv(variable); value != "" {
+			return value, nil
+		}
+	}
+	return "", errors.New("username is unavailable")
+}
+
+func bitSuffix(bits int) string {
+	if bits > 0 {
+		return fmt.Sprintf(" (%d-bit)", bits)
+	}
+	return ""
+}
+
+func quoteArgument(value string) string {
+	if !strings.ContainsAny(value, " \t\"'") {
+		return value
+	}
+	return strconv.Quote(value)
+}
+
+func escapeConfigPath(value string) string {
+	return strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value)
+}

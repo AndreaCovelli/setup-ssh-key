@@ -1,0 +1,4 @@
+/setup-ssh-key
+/setup-ssh-key.exe
+/dist/
+*.test

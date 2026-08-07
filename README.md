@@ -38,6 +38,7 @@ setup-ssh-key alice@192.168.1.10
 setup-ssh-key -t rsa -b 4096 alice@example.com:2222
 setup-ssh-key -k deploy_key -i deploy@ci-host
 setup-ssh-key 'alice@[2001:db8::10]:2222'
+setup-ssh-key --delete -k deploy_key deploy@ci-host
 ```
 
 Use `setup-ssh-key -h` for all flags. Defaults can also be set with `KEY_TYPE`,
@@ -46,6 +47,13 @@ Use `setup-ssh-key -h` for all flags. Defaults can also be set with `KEY_TYPE`,
 Existing key files are never silently overwritten. With confirmation, they are
 moved to unique timestamped backups; if key generation fails or is interrupted,
 the previous pair is restored.
+
+To remove a generated key from both locations, run with `--delete` (or `-d`)
+and the same target and key name used during setup. After confirmation, the
+matching cryptographic key is removed from the remote `authorized_keys` file,
+then the local private and public files are deleted. If the remote operation
+fails, the local pair remains unchanged. The local `.pub` file is required so
+the remote entry can be identified safely.
 
 ## Develop
 

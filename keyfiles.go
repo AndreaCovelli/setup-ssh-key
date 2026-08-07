@@ -111,6 +111,19 @@ func (backups *keyBackups) restore(removeGenerated bool) error {
 	return errors.Join(restoreErrors...)
 }
 
+func (backups *keyBackups) discard() error {
+	var removeErrors []error
+	for _, path := range []string{backups.privateBackup, backups.publicBackup} {
+		if path == "" {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			removeErrors = append(removeErrors, fmt.Errorf("delete staged key file %q: %w", path, err))
+		}
+	}
+	return errors.Join(removeErrors...)
+}
+
 func pathExists(path string) (bool, error) {
 	_, err := os.Lstat(path)
 	if err == nil {

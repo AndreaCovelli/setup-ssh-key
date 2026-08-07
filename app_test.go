@@ -41,6 +41,14 @@ type interruptRunner struct {
 	canceled chan struct{}
 }
 
+type deleteRunner struct {
+	runs      int
+	args      []string
+	input     string
+	remoteErr error
+	afterRun  func()
+}
+
 func (runner *interruptRunner) lookPath(name string) (string, error) {
 	return name, nil
 }
@@ -60,6 +68,34 @@ func (runner *interruptRunner) run(ctx context.Context, name string, _ []string,
 }
 
 func (runner *interruptRunner) combinedOutput(name string, _ []string) ([]byte, error) {
+	return nil, fmt.Errorf("unexpected command %q", name)
+}
+
+func (runner *deleteRunner) lookPath(name string) (string, error) {
+	if name != "ssh" {
+		return "", fmt.Errorf("unexpected command lookup %q", name)
+	}
+	return name, nil
+}
+
+func (runner *deleteRunner) run(_ context.Context, name string, args []string, stdin io.Reader, _, _ io.Writer) error {
+	if name != "ssh" {
+		return fmt.Errorf("unexpected command %q", name)
+	}
+	runner.runs++
+	runner.args = append([]string(nil), args...)
+	input, err := io.ReadAll(stdin)
+	if err != nil {
+		return err
+	}
+	runner.input = string(input)
+	if runner.afterRun != nil {
+		runner.afterRun()
+	}
+	return runner.remoteErr
+}
+
+func (runner *deleteRunner) combinedOutput(name string, _ []string) ([]byte, error) {
 	return nil, fmt.Errorf("unexpected command %q", name)
 }
 
@@ -316,6 +352,194 @@ func TestQuoteArgumentProtectsShellMetacharacters(t *testing.T) {
 		if quoted == value || !strings.HasPrefix(quoted, "'") || !strings.HasSuffix(quoted, "'") {
 			t.Errorf("quoteArgument(%q) = %q", value, quoted)
 		}
+	}
+}
+
+func TestAppDeletesRemoteAndLocalKeyPair(t *testing.T) {
+	keyDir := t.TempDir()
+	keyPath := filepath.Join(keyDir, "test_key")
+	if err := os.WriteFile(keyPath, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath+".pub", []byte("ssh-ed25519 TEST old-comment\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KEY_DIR", keyDir)
+	t.Setenv("NO_COLOR", "1")
+
+	var stdout, stderr bytes.Buffer
+	application := newApp(strings.NewReader("y\n"), &stdout, &stderr)
+	runner := &deleteRunner{}
+	application.runner = runner
+
+	if exitCode := application.run([]string{"--delete", "-k", "test_key", "alice@example.com:2222"}); exitCode != 0 {
+		t.Fatalf("run() exit code = %d, stderr = %s", exitCode, stderr.String())
+	}
+	for _, path := range []string{keyPath, keyPath + ".pub"} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("local key file %q still exists or could not be inspected: %v", path, err)
+		}
+	}
+	entries, err := os.ReadDir(keyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("key directory contains staged deletion files: %v", entries)
+	}
+	if runner.runs != 1 {
+		t.Fatalf("SSH runs = %d", runner.runs)
+	}
+	if runner.input != "ssh-ed25519 TEST\n" {
+		t.Fatalf("remote deletion input = %q", runner.input)
+	}
+	if !slices.Contains(runner.args, "IdentitiesOnly=yes") {
+		t.Fatalf("remote deletion arguments = %v", runner.args)
+	}
+	identityIndex := slices.Index(runner.args, "-i")
+	if identityIndex < 0 || identityIndex+1 == len(runner.args) || runner.args[identityIndex+1] != keyPath {
+		t.Fatalf("remote deletion did not use the local private key: %v", runner.args)
+	}
+	if !strings.Contains(stdout.String(), "Remote public key removed.") || !strings.Contains(stdout.String(), "Local key pair deleted.") {
+		t.Fatalf("missing deletion success output:\n%s", stdout.String())
+	}
+}
+
+func TestAppPreservesLocalKeyPairWhenRemoteDeletionFails(t *testing.T) {
+	keyDir := t.TempDir()
+	keyPath := filepath.Join(keyDir, "test_key")
+	for path, contents := range map[string]string{
+		keyPath:          "private",
+		keyPath + ".pub": "ssh-ed25519 TEST test@example\n",
+	} {
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("KEY_DIR", keyDir)
+	t.Setenv("NO_COLOR", "1")
+
+	var stdout, stderr bytes.Buffer
+	application := newApp(strings.NewReader("yes\n"), &stdout, &stderr)
+	application.runner = &deleteRunner{remoteErr: errors.New("remote unavailable")}
+
+	if exitCode := application.run([]string{"-d", "-k", "test_key", "alice@example.com"}); exitCode != 1 {
+		t.Fatalf("run() exit code = %d, stderr = %s", exitCode, stderr.String())
+	}
+	for path, want := range map[string]string{
+		keyPath:          "private",
+		keyPath + ".pub": "ssh-ed25519 TEST test@example\n",
+	} {
+		contents, err := os.ReadFile(path)
+		if err != nil || string(contents) != want {
+			t.Errorf("restored %q = %q, %v", path, contents, err)
+		}
+	}
+	entries, err := os.ReadDir(keyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("key directory contains staged deletion files: %v", entries)
+	}
+	if !strings.Contains(stderr.String(), "local key pair remains unchanged") {
+		t.Fatalf("missing preservation error:\n%s", stderr.String())
+	}
+}
+
+func TestAppPreservesLocalKeyPairChangedDuringRemoteDeletion(t *testing.T) {
+	keyDir := t.TempDir()
+	keyPath := filepath.Join(keyDir, "test_key")
+	if err := os.WriteFile(keyPath, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath+".pub", []byte("ssh-ed25519 TEST original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KEY_DIR", keyDir)
+	t.Setenv("NO_COLOR", "1")
+
+	var stderr bytes.Buffer
+	application := newApp(strings.NewReader("y\n"), io.Discard, &stderr)
+	runner := &deleteRunner{
+		afterRun: func() {
+			if err := os.WriteFile(keyPath+".pub", []byte("ssh-ed25519 TUVX replacement\n"), 0o644); err != nil {
+				t.Error(err)
+			}
+		},
+	}
+	application.runner = runner
+
+	if exitCode := application.run([]string{"--delete", "-k", "test_key", "alice@example.com"}); exitCode != 1 {
+		t.Fatalf("run() exit code = %d, stderr = %s", exitCode, stderr.String())
+	}
+	for path, want := range map[string]string{
+		keyPath:          "private",
+		keyPath + ".pub": "ssh-ed25519 TUVX replacement\n",
+	} {
+		contents, err := os.ReadFile(path)
+		if err != nil || string(contents) != want {
+			t.Errorf("preserved %q = %q, %v", path, contents, err)
+		}
+	}
+	if !strings.Contains(stderr.String(), "changed and was restored instead of being deleted") {
+		t.Fatalf("missing changed-key error:\n%s", stderr.String())
+	}
+}
+
+func TestAppDoesNotDeleteKeyPairWithoutConfirmation(t *testing.T) {
+	keyDir := t.TempDir()
+	keyPath := filepath.Join(keyDir, "test_key")
+	for _, path := range []string{keyPath, keyPath + ".pub"} {
+		if err := os.WriteFile(path, []byte("ssh-ed25519 TEST test@example\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("KEY_DIR", keyDir)
+	t.Setenv("NO_COLOR", "1")
+
+	application := newApp(strings.NewReader("n\n"), io.Discard, io.Discard)
+	runner := &deleteRunner{}
+	application.runner = runner
+
+	if exitCode := application.run([]string{"--delete", "-k", "test_key", "alice@example.com"}); exitCode != 0 {
+		t.Fatalf("run() exit code = %d", exitCode)
+	}
+	if runner.runs != 0 {
+		t.Fatalf("SSH runs = %d", runner.runs)
+	}
+	for _, path := range []string{keyPath, keyPath + ".pub"} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("local key file %q was changed: %v", path, err)
+		}
+	}
+}
+
+func TestAppPreservesPrivateKeyWhenPublicKeyIsMissing(t *testing.T) {
+	keyDir := t.TempDir()
+	keyPath := filepath.Join(keyDir, "test_key")
+	if err := os.WriteFile(keyPath, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KEY_DIR", keyDir)
+	t.Setenv("NO_COLOR", "1")
+
+	var stderr bytes.Buffer
+	application := newApp(strings.NewReader("y\n"), io.Discard, &stderr)
+	runner := &deleteRunner{}
+	application.runner = runner
+
+	if exitCode := application.run([]string{"--delete", "-k", "test_key", "alice@example.com"}); exitCode != 1 {
+		t.Fatalf("run() exit code = %d, stderr = %s", exitCode, stderr.String())
+	}
+	if runner.runs != 0 {
+		t.Fatalf("SSH runs = %d", runner.runs)
+	}
+	if contents, err := os.ReadFile(keyPath); err != nil || string(contents) != "private" {
+		t.Fatalf("private key = %q, %v", contents, err)
+	}
+	if !strings.Contains(stderr.String(), "public key") {
+		t.Fatalf("missing public-key error:\n%s", stderr.String())
 	}
 }
 

@@ -83,6 +83,17 @@ func (a *app) run(args []string) int {
 	if localHost == "" {
 		return a.fail("could not determine the local hostname")
 	}
+	if opts.keyName == "" {
+		opts.keyName = defaultKeyName(opts.target.host, localHost)
+	}
+	if err := validateKeyName(opts.keyName); err != nil {
+		return a.fail("%v", err)
+	}
+	keyPath := filepath.Join(opts.keyDir, opts.keyName)
+	if opts.deleteKey {
+		return a.runDelete(keyPath, opts.target)
+	}
+
 	if opts.comment == "" {
 		localUser, err := currentUsername()
 		if err != nil {
@@ -91,12 +102,6 @@ func (a *app) run(args []string) int {
 		opts.comment = localUser + "@" + localHost
 	}
 	if err := validateComment(opts.comment); err != nil {
-		return a.fail("%v", err)
-	}
-	if opts.keyName == "" {
-		opts.keyName = defaultKeyName(opts.target.host, localHost)
-	}
-	if err := validateKeyName(opts.keyName); err != nil {
 		return a.fail("%v", err)
 	}
 
@@ -125,7 +130,6 @@ func (a *app) run(args []string) int {
 		return a.fail("secure key directory %q: %v", opts.keyDir, err)
 	}
 
-	keyPath := filepath.Join(opts.keyDir, opts.keyName)
 	a.header("══ SSH Key Setup ══════════════════════════════════════")
 	a.info("Key type   : %s%s", opts.keyType, bitSuffix(opts.keyBits))
 	a.info("Key path   : %s", keyPath)

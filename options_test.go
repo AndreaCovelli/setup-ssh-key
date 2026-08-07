@@ -73,3 +73,39 @@ func TestParseOptionsRejectsMultilineValues(t *testing.T) {
 		}
 	})
 }
+
+func TestParseOptionsDeleteMode(t *testing.T) {
+	t.Setenv("KEY_TYPE", "unsupported-for-generation")
+	t.Setenv("KEY_BITS", "not-a-number")
+	t.Setenv("COMMENT", "ignored\nfor deletion")
+	t.Setenv("KEY_DIR", "")
+
+	for _, flag := range []string{"-d", "--delete"} {
+		opts, err := parseOptions([]string{flag, "-k", "test_key", "alice@host"}, t.TempDir(), io.Discard)
+		if err != nil {
+			t.Fatalf("parseOptions(%q) error = %v", flag, err)
+		}
+		if !opts.deleteKey || opts.keyName != "test_key" {
+			t.Fatalf("parseOptions(%q) = %#v", flag, opts)
+		}
+	}
+}
+
+func TestParseOptionsRejectsGenerationFlagsInDeleteMode(t *testing.T) {
+	t.Setenv("KEY_TYPE", "")
+	t.Setenv("KEY_BITS", "")
+	t.Setenv("COMMENT", "")
+	t.Setenv("KEY_DIR", "")
+
+	tests := [][]string{
+		{"--delete", "-t", "rsa", "alice@host"},
+		{"--delete", "-b", "4096", "alice@host"},
+		{"--delete", "-c", "comment", "alice@host"},
+		{"--delete", "-i", "alice@host"},
+	}
+	for _, args := range tests {
+		if _, err := parseOptions(args, t.TempDir(), io.Discard); err == nil {
+			t.Errorf("parseOptions(%v) unexpectedly succeeded", args)
+		}
+	}
+}

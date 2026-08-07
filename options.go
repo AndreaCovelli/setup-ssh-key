@@ -37,6 +37,7 @@ type options struct {
 	keyDir        string
 	comment       string
 	emptyPassword bool
+	deleteKey     bool
 	showVersion   bool
 	target        target
 }
@@ -60,6 +61,8 @@ func parseOptions(args []string, home string, stderr io.Writer) (options, error)
 	flags.StringVar(&bits, "b", bits, "key size in bits")
 	flags.StringVar(&opts.comment, "c", opts.comment, "key comment")
 	flags.BoolVar(&opts.emptyPassword, "i", false, "use an empty passphrase after confirmation")
+	flags.BoolVar(&opts.deleteKey, "d", false, "delete the key locally and remotely")
+	flags.BoolVar(&opts.deleteKey, "delete", false, "delete the key locally and remotely")
 	flags.BoolVar(&opts.showVersion, "version", false, "show version")
 	flags.Usage = func() {}
 
@@ -82,6 +85,29 @@ func parseOptions(args []string, home string, stderr io.Writer) (options, error)
 		return options{}, usageError(err)
 	}
 	opts.target = parsedTarget
+	if opts.deleteKey {
+		var incompatible []string
+		flags.Visit(func(visited *flag.Flag) {
+			switch visited.Name {
+			case "t", "b", "c", "i":
+				incompatible = append(incompatible, "-"+visited.Name)
+			}
+		})
+		if len(incompatible) > 0 {
+			return options{}, usageError(fmt.Errorf("%s cannot be used with --delete", strings.Join(incompatible, ", ")))
+		}
+		if opts.keyName != "" {
+			if err := validateKeyName(opts.keyName); err != nil {
+				return options{}, usageError(err)
+			}
+		}
+		if opts.keyDir != "" {
+			if err := validateKeyDir(opts.keyDir); err != nil {
+				return options{}, usageError(err)
+			}
+		}
+		return opts, nil
+	}
 
 	switch opts.keyType {
 	case "ed25519":

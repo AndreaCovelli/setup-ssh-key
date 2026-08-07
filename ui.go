@@ -40,6 +40,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintf(out, `Usage:
   %s [OPTIONS] user@host[:port]
   %s [OPTIONS] user@[IPv6-address][:port]
+  %s --delete [-k <name>] user@host[:port]
 
 Options:
   -k <name>   Key filename stem (default: <host>_from_<client>)
@@ -47,6 +48,8 @@ Options:
   -b <bits>   Key bits for rsa/ecdsa            (default: 4096 / 521)
   -c <text>   Key comment                        (default: user@client)
   -i          Use an empty passphrase after confirmation (not recommended)
+  -d, --delete
+              Delete the key locally and from the remote host after confirmation
   -h          Show this help
   --version   Show version
 
@@ -55,7 +58,8 @@ Examples:
   %s -t rsa -b 4096 alice@myserver.com:2222
   %s -k deploy_key -i deploy@ci-host
   %s 'alice@[2001:db8::10]:2222'
-`, programName(), programName(), programName(), programName(), programName(), programName())
+  %s --delete -k deploy_key deploy@ci-host
+`, programName(), programName(), programName(), programName(), programName(), programName(), programName(), programName())
 }
 
 func (a *app) confirm(prompt string, defaultYes bool) bool {

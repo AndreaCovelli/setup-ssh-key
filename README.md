@@ -49,6 +49,15 @@ the previous pair is restored.
 
 ## Develop
 
+Install the pinned development tools and run every repository check:
+
+```sh
+mise install
+mise run check
+```
+
+The individual Go commands remain available when working without mise:
+
 ```sh
 go test ./...
 go vet ./...

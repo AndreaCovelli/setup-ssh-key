@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os/exec"
 )
@@ -28,4 +29,19 @@ func (systemRunner) run(ctx context.Context, name string, args []string, stdin i
 
 func (systemRunner) combinedOutput(name string, args []string) ([]byte, error) {
 	return exec.Command(name, args...).CombinedOutput()
+}
+
+type exitCoder interface {
+	error
+	ExitCode() int
+}
+
+func sshAgentAvailable(runner commandRunner) bool {
+	_, err := runner.combinedOutput("ssh-add", []string{"-l"})
+	if err == nil {
+		return true
+	}
+
+	var exitErr exitCoder
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == 1
 }

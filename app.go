@@ -215,15 +215,18 @@ func (a *app) run(args []string) int {
 
 	fmt.Fprintln(a.out)
 	a.info("Verifying key-based login…")
-	verifyArgs := sshArgs(opts.target, "-v", "-i", keyPath,
+	verifyArgs := sshArgs(opts.target, "-i", keyPath,
 		"-o", "IdentitiesOnly=yes",
-		"-o", "BatchMode=yes",
+		"-o", "PubkeyAuthentication=yes",
+		"-o", "PreferredAuthentications=publickey",
+		"-o", "BatchMode=no",
+		"-o", "PasswordAuthentication=no",
+		"-o", "KbdInteractiveAuthentication=no",
 		"-o", "ConnectTimeout=10",
 		"-o", "StrictHostKeyChecking=yes",
 		opts.target.destination, "true")
-	trace, verifyErr := a.runner.combinedOutput("ssh", verifyArgs)
-	accepted := "Server accepts key: " + keyPath + " "
-	if verifyErr == nil && strings.Contains(string(trace), accepted) {
+	verifyErr := a.runner.run(context.Background(), "ssh", verifyArgs, a.commandIn, a.out, a.errOut)
+	if verifyErr == nil {
 		a.success("Key-based login works.")
 	} else {
 		a.warn("Could not verify that the newly generated key was accepted.")
@@ -233,7 +236,7 @@ func (a *app) run(args []string) int {
 	fmt.Fprintln(a.out)
 	if opts.emptyPassword {
 		a.info("No passphrase set; skipping ssh-agent (nothing to cache).")
-	} else if _, err := a.runner.lookPath("ssh-add"); err == nil && (os.Getenv("SSH_AUTH_SOCK") != "" || runtime.GOOS == "windows") {
+	} else if _, err := a.runner.lookPath("ssh-add"); err == nil && sshAgentAvailable(a.runner) {
 		if a.confirm("Add key to ssh-agent? [Y/n]:", true) {
 			if err := a.runner.run(context.Background(), "ssh-add", []string{keyPath}, a.commandIn, a.out, a.errOut); err != nil {
 				a.warn("Failed to add the key to ssh-agent. You can try manually later.")

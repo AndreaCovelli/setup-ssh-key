@@ -15,10 +15,20 @@ import (
 )
 
 type fakeRunner struct {
-	keyPath      string
-	uploadedKey  string
-	verification []string
+	keyPath           string
+	uploadedKey       string
+	verification      []string
+	verificationRun   bool
+	sshAddFound       bool
+	sshAddProbeErr    error
+	sshAddProbeCount  int
+	sshAddCommandRuns int
 }
+
+type exitCodeError int
+
+func (err exitCodeError) Error() string { return fmt.Sprintf("exit code %d", err) }
+func (err exitCodeError) ExitCode() int { return int(err) }
 
 type namedSignal string
 
@@ -54,7 +64,7 @@ func (runner *interruptRunner) combinedOutput(name string, _ []string) ([]byte, 
 }
 
 func (runner *fakeRunner) lookPath(name string) (string, error) {
-	if name == "ssh-add" {
+	if name == "ssh-add" && !runner.sshAddFound {
 		return "", errors.New("not found")
 	}
 	return name, nil
@@ -73,23 +83,33 @@ func (runner *fakeRunner) run(_ context.Context, name string, args []string, std
 		}
 		return os.WriteFile(runner.keyPath+".pub", []byte("ssh-ed25519 TEST test@example\n"), 0o644)
 	case "ssh":
+		if slices.Contains(args, "-i") {
+			runner.verification = append([]string(nil), args...)
+			runner.verificationRun = true
+			return nil
+		}
 		key, err := io.ReadAll(stdin)
 		if err != nil {
 			return err
 		}
 		runner.uploadedKey = string(key)
 		return nil
+	case "ssh-add":
+		runner.sshAddCommandRuns++
+		return nil
 	default:
 		return fmt.Errorf("unexpected command %q", name)
 	}
 }
 
-func (runner *fakeRunner) combinedOutput(name string, args []string) ([]byte, error) {
-	if name != "ssh" {
+func (runner *fakeRunner) combinedOutput(name string, _ []string) ([]byte, error) {
+	switch name {
+	case "ssh-add":
+		runner.sshAddProbeCount++
+		return nil, runner.sshAddProbeErr
+	default:
 		return nil, fmt.Errorf("unexpected command %q", name)
 	}
-	runner.verification = append([]string(nil), args...)
-	return []byte("debug1: Server accepts key: " + runner.keyPath + " ED25519 SHA256:test\n"), nil
 }
 
 func TestAppRunsCompleteWorkflow(t *testing.T) {
@@ -106,7 +126,7 @@ func TestAppRunsCompleteWorkflow(t *testing.T) {
 	runner := &fakeRunner{}
 	application.runner = runner
 
-	if exitCode := application.run([]string{"-i", "-k", "test_key", "alice@example.com:2222"}); exitCode != 0 {
+	if exitCode := application.run([]string{"-k", "test_key", "alice@example.com:2222"}); exitCode != 0 {
 		t.Fatalf("run() exit code = %d, stderr = %s", exitCode, stderr.String())
 	}
 	if runner.uploadedKey != "ssh-ed25519 TEST test@example\n" {
@@ -114,6 +134,18 @@ func TestAppRunsCompleteWorkflow(t *testing.T) {
 	}
 	if !slices.Contains(runner.verification, "IdentitiesOnly=yes") {
 		t.Fatalf("verification arguments = %v", runner.verification)
+	}
+	if !runner.verificationRun {
+		t.Fatal("verification did not use the interactive command path")
+	}
+	if slices.Contains(runner.verification, "BatchMode=yes") {
+		t.Fatalf("verification disables the key passphrase prompt: %v", runner.verification)
+	}
+	if !slices.Contains(runner.verification, "BatchMode=no") {
+		t.Fatalf("verification does not override batch mode: %v", runner.verification)
+	}
+	if !slices.Contains(runner.verification, "PreferredAuthentications=publickey") {
+		t.Fatalf("verification can fall back to a remote password: %v", runner.verification)
 	}
 	for _, expected := range []string{
 		"Public key installed on the remote host.",
@@ -124,6 +156,67 @@ func TestAppRunsCompleteWorkflow(t *testing.T) {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Errorf("output does not contain %q:\n%s", expected, stdout.String())
 		}
+	}
+}
+
+func TestAppDoesNotOfferSSHAddWhenAgentIsUnavailable(t *testing.T) {
+	keyDir := t.TempDir()
+	t.Setenv("KEY_DIR", keyDir)
+	t.Setenv("COMMENT", "test@example")
+	t.Setenv("SSH_AUTH_SOCK", "stale-agent-socket")
+	t.Setenv("NO_COLOR", "1")
+
+	var stdout, stderr bytes.Buffer
+	application := newApp(strings.NewReader("n\n"), &stdout, &stderr)
+	runner := &fakeRunner{
+		sshAddFound:    true,
+		sshAddProbeErr: exitCodeError(2),
+	}
+	application.runner = runner
+
+	if exitCode := application.run([]string{"-k", "test_key", "alice@example.com"}); exitCode != 0 {
+		t.Fatalf("run() exit code = %d, stderr = %s", exitCode, stderr.String())
+	}
+	if runner.sshAddProbeCount != 1 {
+		t.Fatalf("ssh-agent probe count = %d", runner.sshAddProbeCount)
+	}
+	if runner.sshAddCommandRuns != 0 {
+		t.Fatalf("ssh-add command runs = %d", runner.sshAddCommandRuns)
+	}
+	if strings.Contains(stdout.String(), "Add key to ssh-agent?") {
+		t.Fatalf("offered ssh-add without a usable agent:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "ssh-agent not running") {
+		t.Fatalf("missing unavailable-agent guidance:\n%s", stdout.String())
+	}
+}
+
+func TestAppOffersSSHAddWhenAgentIsRunningWithoutIdentities(t *testing.T) {
+	keyDir := t.TempDir()
+	t.Setenv("KEY_DIR", keyDir)
+	t.Setenv("COMMENT", "test@example")
+	t.Setenv("SSH_AUTH_SOCK", "agent-socket")
+	t.Setenv("NO_COLOR", "1")
+
+	var stdout, stderr bytes.Buffer
+	application := newApp(strings.NewReader("y\n"), &stdout, &stderr)
+	runner := &fakeRunner{
+		sshAddFound:    true,
+		sshAddProbeErr: exitCodeError(1),
+	}
+	application.runner = runner
+
+	if exitCode := application.run([]string{"-k", "test_key", "alice@example.com"}); exitCode != 0 {
+		t.Fatalf("run() exit code = %d, stderr = %s", exitCode, stderr.String())
+	}
+	if runner.sshAddProbeCount != 1 {
+		t.Fatalf("ssh-agent probe count = %d", runner.sshAddProbeCount)
+	}
+	if runner.sshAddCommandRuns != 1 {
+		t.Fatalf("ssh-add command runs = %d", runner.sshAddCommandRuns)
+	}
+	if !strings.Contains(stdout.String(), "Key added to ssh-agent.") {
+		t.Fatalf("missing ssh-add success message:\n%s", stdout.String())
 	}
 }
 

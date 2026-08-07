@@ -21,6 +21,7 @@ type options struct {
 	keyDir        string
 	comment       string
 	emptyPassword bool
+	showVersion   bool
 	target        target
 }
 
@@ -39,10 +40,14 @@ func parseOptions(args []string, home string, stderr io.Writer) (options, error)
 	flags.StringVar(&bits, "b", bits, "key size in bits")
 	flags.StringVar(&opts.comment, "c", opts.comment, "key comment")
 	flags.BoolVar(&opts.emptyPassword, "i", false, "use an empty passphrase after confirmation")
+	flags.BoolVar(&opts.showVersion, "version", false, "show version")
 	flags.Usage = func() { printUsage(stderr) }
 
 	if err := flags.Parse(args); err != nil {
 		return options{}, err
+	}
+	if opts.showVersion {
+		return opts, nil
 	}
 	if flags.NArg() != 1 {
 		return options{}, errUsage

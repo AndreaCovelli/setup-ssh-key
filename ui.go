@@ -48,6 +48,7 @@ Options:
   -c <text>   Key comment                        (default: user@client)
   -i          Use an empty passphrase after confirmation (not recommended)
   -h          Show this help
+  --version   Show version
 
 Examples:
   %s alice@192.168.1.10

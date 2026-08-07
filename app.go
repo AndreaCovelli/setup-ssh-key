@@ -53,6 +53,10 @@ func (a *app) run(args []string) int {
 	if err != nil {
 		return a.fail("%v", err)
 	}
+	if opts.showVersion {
+		fmt.Fprintf(a.out, "%s %s\n", programName(), version)
+		return 0
+	}
 
 	localHost, err := os.Hostname()
 	if err != nil || localHost == "" {

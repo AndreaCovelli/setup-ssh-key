@@ -2,21 +2,48 @@ name: test
 
 on:
   push:
+    branches: [main]
+    paths: &ci_paths
+      - "**/*.go"
+      - "go.mod"
+      - "scripts/**"
+      - ".github/workflows/*.yml"
   pull_request:
+    branches: [main]
+    paths: *ci_paths
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
+    name: test (${{ matrix.os }})
+    timeout-minutes: 10
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
         with:
-          go-version: stable
-      - run: go test ./...
-      - run: go vet ./...
+          go-version-file: go.mod
+          cache: false
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build .

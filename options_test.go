@@ -47,3 +47,13 @@ func TestKeyNames(t *testing.T) {
 		}
 	}
 }
+
+func TestParseOptionsVersionNeedsNoTarget(t *testing.T) {
+	opts, err := parseOptions([]string{"--version"}, t.TempDir(), io.Discard)
+	if err != nil {
+		t.Fatalf("parseOptions() error = %v", err)
+	}
+	if !opts.showVersion {
+		t.Fatal("parseOptions() did not set showVersion")
+	}
+}

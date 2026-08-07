@@ -59,3 +59,16 @@ To verify the Windows build from another platform:
 ```sh
 GOOS=windows GOARCH=amd64 go build -o dist/setup-ssh-key.exe .
 ```
+
+## Releases
+
+Push a semantic-version tag to build and publish a GitHub release:
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The release workflow tests the repository, builds `amd64` and `arm64` archives
+for Linux, macOS, and Windows, verifies their contents, and publishes SHA-256
+checksums with generated release notes.

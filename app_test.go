@@ -17,6 +17,7 @@ import (
 type fakeRunner struct {
 	keyPath           string
 	uploadedKey       string
+	uploadArgs        []string
 	verification      []string
 	verificationRun   bool
 	sshAddFound       bool
@@ -128,6 +129,7 @@ func (runner *fakeRunner) run(_ context.Context, name string, args []string, std
 		if err != nil {
 			return err
 		}
+		runner.uploadArgs = append([]string(nil), args...)
 		runner.uploadedKey = string(key)
 		return nil
 	case "ssh-add":
@@ -343,6 +345,60 @@ func TestInstallPublicKeyAcceptsSingleCRLFLine(t *testing.T) {
 	}
 	if runner.uploadedKey != "ssh-ed25519 TEST expected@example\n" {
 		t.Fatalf("uploaded key = %q", runner.uploadedKey)
+	}
+}
+
+func TestInstallPublicKeySupportsOpenWrtDropbear(t *testing.T) {
+	publicPath := filepath.Join(t.TempDir(), "key.pub")
+	if err := os.WriteFile(publicPath, []byte("ssh-ed25519 TEST expected@example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	application := newApp(strings.NewReader(""), io.Discard, io.Discard)
+	runner := &fakeRunner{}
+	application.runner = runner
+	remote, err := parseTarget("root@openwrt.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := application.installPublicKey(publicPath, remote); err != nil {
+		t.Fatalf("installPublicKey() error = %v", err)
+	}
+	assertSelectsRemoteAuthorizedKeysFile(t, runner.uploadArgs)
+}
+
+func TestDeleteRemotePublicKeySupportsOpenWrtDropbear(t *testing.T) {
+	application := newApp(strings.NewReader(""), io.Discard, io.Discard)
+	runner := &deleteRunner{}
+	application.runner = runner
+	remote, err := parseTarget("root@openwrt.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := application.removeRemotePublicKey([]byte("ssh-ed25519 TEST\n"), "", remote); err != nil {
+		t.Fatalf("removeRemotePublicKey() error = %v", err)
+	}
+	assertSelectsRemoteAuthorizedKeysFile(t, runner.args)
+}
+
+func assertSelectsRemoteAuthorizedKeysFile(t *testing.T, args []string) {
+	t.Helper()
+	if len(args) == 0 {
+		t.Fatal("SSH command has no arguments")
+	}
+	command := args[len(args)-1]
+	for _, expected := range []string{
+		`$HOME/.ssh/authorized_keys`,
+		`/etc/dropbear/authorized_keys`,
+		`/etc/openwrt_release`,
+		`/etc/config/dropbear`,
+		`id -u`,
+	} {
+		if !strings.Contains(command, expected) {
+			t.Errorf("remote command does not contain %q:\n%s", expected, command)
+		}
 	}
 }
 

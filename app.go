@@ -19,6 +19,25 @@ import (
 
 var errUsage = errors.New("usage")
 
+// OpenWrt's Dropbear package stores root authorization keys outside root's home.
+const remoteAuthorizedKeysSelection = `auth="$HOME/.ssh/authorized_keys"
+if [ "$(id -u)" = 0 ] && [ -d /etc/dropbear ] &&
+   { [ -f /etc/openwrt_release ] || [ -f /etc/config/dropbear ]; }; then
+    auth="/etc/dropbear/authorized_keys"
+fi`
+
+const installRemotePublicKeyCommand = `set -eu
+umask 077
+` + remoteAuthorizedKeysSelection + `
+auth_dir=${auth%/*}
+mkdir -p "$auth_dir"
+if [ "$auth_dir" = "$HOME/.ssh" ]; then
+    chmod 700 "$auth_dir"
+fi
+touch "$auth"
+chmod 600 "$auth"
+cat >> "$auth"`
+
 type app struct {
 	in            *bufio.Reader
 	commandIn     io.Reader
@@ -281,8 +300,7 @@ func (a *app) installPublicKey(publicPath string, remote target) error {
 	a.info("Uploading public key to %s:%d…", remote.destination, remote.port)
 	a.info("You may be prompted for %s's remote password.", remote.user)
 	fmt.Fprintln(a.out)
-	remoteCommand := `umask 077; mkdir -p "$HOME/.ssh" && touch "$HOME/.ssh/authorized_keys" && chmod 700 "$HOME/.ssh" && chmod 600 "$HOME/.ssh/authorized_keys" && cat >> "$HOME/.ssh/authorized_keys"`
-	args := sshArgs(remote, remote.destination, remoteCommand)
+	args := sshArgs(remote, remote.destination, installRemotePublicKeyCommand)
 	return a.runner.run(context.Background(), "ssh", args, bytes.NewReader(key), a.out, a.errOut)
 }
 

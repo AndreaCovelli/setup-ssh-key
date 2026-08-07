@@ -15,7 +15,7 @@ var validPublicKeyType = regexp.MustCompile(`^[A-Za-z0-9@._+-]+$`)
 
 const removeRemotePublicKeyCommand = `set -eu
 umask 077
-auth="$HOME/.ssh/authorized_keys"
+` + remoteAuthorizedKeysSelection + `
 IFS=' ' read -r target_type target_blob
 [ -n "$target_type" ] && [ -n "$target_blob" ]
 [ -f "$auth" ] || exit 0

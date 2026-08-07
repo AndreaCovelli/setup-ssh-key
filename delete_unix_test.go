@@ -3,12 +3,46 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestInstallRemotePublicKeyCommandUsesConventionalAuthorizedKeys(t *testing.T) {
+	remoteHome := t.TempDir()
+	command := exec.Command("sh", "-c", installRemotePublicKeyCommand)
+	command.Env = append(os.Environ(), "HOME="+remoteHome)
+	command.Stdin = strings.NewReader("ssh-ed25519 TEST test@example\n")
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		t.Fatalf("remote installation command failed: %v\n%s", err, stderr.String())
+	}
+
+	authorizedKeys := filepath.Join(remoteHome, ".ssh", "authorized_keys")
+	got, err := os.ReadFile(authorizedKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "ssh-ed25519 TEST test@example\n"; string(got) != want {
+		t.Fatalf("authorized_keys = %q, want %q", got, want)
+	}
+	for path, want := range map[string]os.FileMode{
+		filepath.Dir(authorizedKeys): 0o700,
+		authorizedKeys:               0o600,
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("permissions for %q = %o, want %o", path, got, want)
+		}
+	}
+}
 
 func TestRemoveRemotePublicKeyCommandMatchesKeyNotComment(t *testing.T) {
 	remoteHome := t.TempDir()

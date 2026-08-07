@@ -6,8 +6,9 @@ entry. It is a portable Go replacement for the original Bash script.
 
 The client runs on Linux, macOS, and Windows. It requires `ssh` and `ssh-keygen`
 from OpenSSH on `PATH`; unlike the Bash version, it does not require
-`ssh-copy-id`. The remote host is expected to provide a Unix-like shell and the
-usual `~/.ssh/authorized_keys` layout.
+`ssh-copy-id`. The remote host must provide a Unix-like shell. Conventional
+OpenSSH `~/.ssh/authorized_keys` files are supported, and root sessions on
+OpenWrt automatically use Dropbear's `/etc/dropbear/authorized_keys` file.
 
 ## Install
 

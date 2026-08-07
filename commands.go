@@ -1,13 +1,14 @@
 package main
 
 import (
+	"context"
 	"io"
 	"os/exec"
 )
 
 type commandRunner interface {
 	lookPath(string) (string, error)
-	run(string, []string, io.Reader, io.Writer, io.Writer) error
+	run(context.Context, string, []string, io.Reader, io.Writer, io.Writer) error
 	combinedOutput(string, []string) ([]byte, error)
 }
 
@@ -17,8 +18,8 @@ func (systemRunner) lookPath(name string) (string, error) {
 	return exec.LookPath(name)
 }
 
-func (systemRunner) run(name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	cmd := exec.Command(name, args...)
+func (systemRunner) run(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr

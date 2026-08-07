@@ -14,6 +14,22 @@ import (
 
 var validKeyName = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
+type invocationError struct {
+	err error
+}
+
+func (err invocationError) Error() string {
+	return err.err.Error()
+}
+
+func (invocationError) Is(target error) bool {
+	return target == errUsage
+}
+
+func usageError(err error) error {
+	return invocationError{err: err}
+}
+
 type options struct {
 	keyName       string
 	keyType       string
@@ -26,25 +42,33 @@ type options struct {
 }
 
 func parseOptions(args []string, home string, stderr io.Writer) (options, error) {
+	keyDir := os.Getenv("KEY_DIR")
+	if keyDir == "" && home != "" {
+		keyDir = filepath.Join(home, ".ssh")
+	}
 	opts := options{
 		keyType: envOr("KEY_TYPE", "ed25519"),
-		keyDir:  envOr("KEY_DIR", filepath.Join(home, ".ssh")),
+		keyDir:  keyDir,
 		comment: os.Getenv("COMMENT"),
 	}
 	bits := os.Getenv("KEY_BITS")
 
 	flags := flag.NewFlagSet(programName(), flag.ContinueOnError)
-	flags.SetOutput(stderr)
+	flags.SetOutput(io.Discard)
 	flags.StringVar(&opts.keyName, "k", "", "key filename stem")
 	flags.StringVar(&opts.keyType, "t", opts.keyType, "key type")
 	flags.StringVar(&bits, "b", bits, "key size in bits")
 	flags.StringVar(&opts.comment, "c", opts.comment, "key comment")
 	flags.BoolVar(&opts.emptyPassword, "i", false, "use an empty passphrase after confirmation")
 	flags.BoolVar(&opts.showVersion, "version", false, "show version")
-	flags.Usage = func() { printUsage(stderr) }
+	flags.Usage = func() {}
 
 	if err := flags.Parse(args); err != nil {
-		return options{}, err
+		if errors.Is(err, flag.ErrHelp) {
+			printUsage(stderr)
+			return options{}, err
+		}
+		return options{}, usageError(err)
 	}
 	if opts.showVersion {
 		return opts, nil
@@ -55,7 +79,7 @@ func parseOptions(args []string, home string, stderr io.Writer) (options, error)
 
 	parsedTarget, err := parseTarget(flags.Arg(0))
 	if err != nil {
-		return options{}, err
+		return options{}, usageError(err)
 	}
 	opts.target = parsedTarget
 
@@ -71,10 +95,10 @@ func parseOptions(args []string, home string, stderr io.Writer) (options, error)
 		}
 		value, err := decimalInteger(bits)
 		if err != nil {
-			return options{}, fmt.Errorf("RSA key size must be an integer (got %q)", bits)
+			return options{}, usageError(fmt.Errorf("RSA key size must be an integer (got %q)", bits))
 		}
 		if value < 2048 || value > 16384 {
-			return options{}, fmt.Errorf("RSA key size must be between 2048 and 16384 bits (got %d)", value)
+			return options{}, usageError(fmt.Errorf("RSA key size must be between 2048 and 16384 bits (got %d)", value))
 		}
 		opts.keyBits = value
 	case "ecdsa":
@@ -83,16 +107,24 @@ func parseOptions(args []string, home string, stderr io.Writer) (options, error)
 		}
 		value, err := decimalInteger(bits)
 		if err != nil || (value != 256 && value != 384 && value != 521) {
-			return options{}, fmt.Errorf("ECDSA key size must be 256, 384, or 521 (got %q)", bits)
+			return options{}, usageError(fmt.Errorf("ECDSA key size must be 256, 384, or 521 (got %q)", bits))
 		}
 		opts.keyBits = value
 	default:
-		return options{}, fmt.Errorf("unsupported key type %q; use ed25519, rsa, or ecdsa", opts.keyType)
+		return options{}, usageError(fmt.Errorf("unsupported key type %q; use ed25519, rsa, or ecdsa", opts.keyType))
 	}
 
 	if opts.keyName != "" {
 		if err := validateKeyName(opts.keyName); err != nil {
-			return options{}, err
+			return options{}, usageError(err)
+		}
+	}
+	if err := validateComment(opts.comment); err != nil {
+		return options{}, usageError(err)
+	}
+	if opts.keyDir != "" {
+		if err := validateKeyDir(opts.keyDir); err != nil {
+			return options{}, usageError(err)
 		}
 	}
 	return opts, nil
@@ -108,6 +140,20 @@ func decimalInteger(value string) (int, error) {
 func validateKeyName(name string) error {
 	if !validKeyName.MatchString(name) || name == "." || name == ".." {
 		return fmt.Errorf("invalid key name %q; use only letters, digits, dots, dashes, and underscores", name)
+	}
+	return nil
+}
+
+func validateComment(comment string) error {
+	if strings.ContainsAny(comment, "\x00\r\n") {
+		return errors.New("key comment must be a single line")
+	}
+	return nil
+}
+
+func validateKeyDir(path string) error {
+	if strings.ContainsAny(path, "\x00\r\n") {
+		return errors.New("key directory must be a single line")
 	}
 	return nil
 }

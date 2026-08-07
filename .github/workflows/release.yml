@@ -55,6 +55,12 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         shell: bash
         run: |
+          release_flags=()
+          version_without_metadata=${RELEASE_TAG%%+*}
+          if [[ "$version_without_metadata" == *-* ]]; then
+            release_flags+=(--prerelease --latest=false)
+          fi
+
           gh release create "$RELEASE_TAG" \
             dist/setup-ssh-key_linux_amd64.tar.gz \
             dist/setup-ssh-key_linux_arm64.tar.gz \
@@ -65,4 +71,5 @@ jobs:
             dist/checksums.txt \
             --verify-tag \
             --generate-notes \
-            --title "$RELEASE_TAG"
+            --title "$RELEASE_TAG" \
+            "${release_flags[@]}"

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -18,35 +20,38 @@ import (
 var errUsage = errors.New("usage")
 
 type app struct {
-	in        *bufio.Reader
-	commandIn io.Reader
-	out       io.Writer
-	errOut    io.Writer
-	colors    palette
-	runner    commandRunner
+	in            *bufio.Reader
+	commandIn     io.Reader
+	out           io.Writer
+	errOut        io.Writer
+	colors        palette
+	runner        commandRunner
+	notifySignals func(chan<- os.Signal, ...os.Signal)
+	stopSignals   func(chan<- os.Signal)
 }
 
 func newApp(in io.Reader, out, errOut io.Writer) *app {
 	return &app{
-		in:        bufio.NewReader(in),
-		commandIn: in,
-		out:       out,
-		errOut:    errOut,
-		colors:    colorsFor(out),
-		runner:    systemRunner{},
+		in:            bufio.NewReader(in),
+		commandIn:     in,
+		out:           out,
+		errOut:        errOut,
+		colors:        colorsFor(out),
+		runner:        systemRunner{},
+		notifySignals: signal.Notify,
+		stopSignals:   signal.Stop,
 	}
 }
 
 func (a *app) run(args []string) int {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return a.fail("could not determine the home directory: %v", err)
-	}
-	opts, err := parseOptions(args, home, a.errOut)
+	opts, err := parseOptions(args, "", a.errOut)
 	if errors.Is(err, flagHelpError()) {
 		return 0
 	}
 	if errors.Is(err, errUsage) {
+		if err != errUsage {
+			a.fail("%v", err)
+		}
 		printUsage(a.errOut)
 		return 2
 	}
@@ -56,6 +61,16 @@ func (a *app) run(args []string) int {
 	if opts.showVersion {
 		fmt.Fprintf(a.out, "%s %s\n", programName(), version)
 		return 0
+	}
+	if opts.keyDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return a.fail("could not determine the home directory: %v", err)
+		}
+		opts.keyDir = filepath.Join(home, ".ssh")
+		if err := validateKeyDir(opts.keyDir); err != nil {
+			return a.fail("%v", err)
+		}
 	}
 
 	localHost, err := os.Hostname()
@@ -74,6 +89,9 @@ func (a *app) run(args []string) int {
 			return a.fail("could not determine the local user: %v", err)
 		}
 		opts.comment = localUser + "@" + localHost
+	}
+	if err := validateComment(opts.comment); err != nil {
+		return a.fail("%v", err)
 	}
 	if opts.keyName == "" {
 		opts.keyName = defaultKeyName(opts.target.host, localHost)
@@ -145,14 +163,28 @@ func (a *app) run(args []string) int {
 
 	a.info("Generating SSH key pair…")
 	signalChannel := make(chan os.Signal, 1)
-	signal.Notify(signalChannel, generationSignals()...)
-	generationErr := a.runner.run("ssh-keygen", keygenArgs, a.commandIn, a.out, a.errOut)
-	signal.Stop(signalChannel)
+	a.notifySignals(signalChannel, generationSignals()...)
+	generationContext, cancelGeneration := context.WithCancel(context.Background())
+	commandResult := make(chan error, 1)
+	go func() {
+		commandResult <- a.runner.run(generationContext, "ssh-keygen", keygenArgs, a.commandIn, a.out, a.errOut)
+	}()
+
+	var generationErr error
 	var interrupted os.Signal
 	select {
+	case generationErr = <-commandResult:
+		a.stopSignals(signalChannel)
+		select {
+		case interrupted = <-signalChannel:
+		default:
+		}
 	case interrupted = <-signalChannel:
-	default:
+		a.stopSignals(signalChannel)
+		cancelGeneration()
+		generationErr = <-commandResult
 	}
+	cancelGeneration()
 	if generationErr != nil || interrupted != nil {
 		if restoreErr := backups.restore(true); restoreErr != nil {
 			return a.fail("ssh-keygen failed and the previous key pair could not be fully restored: %v", restoreErr)
@@ -203,7 +235,7 @@ func (a *app) run(args []string) int {
 		a.info("No passphrase set; skipping ssh-agent (nothing to cache).")
 	} else if _, err := a.runner.lookPath("ssh-add"); err == nil && (os.Getenv("SSH_AUTH_SOCK") != "" || runtime.GOOS == "windows") {
 		if a.confirm("Add key to ssh-agent? [Y/n]:", true) {
-			if err := a.runner.run("ssh-add", []string{keyPath}, a.commandIn, a.out, a.errOut); err != nil {
+			if err := a.runner.run(context.Background(), "ssh-add", []string{keyPath}, a.commandIn, a.out, a.errOut); err != nil {
 				a.warn("Failed to add the key to ssh-agent. You can try manually later.")
 			} else {
 				a.success("Key added to ssh-agent.")
@@ -225,18 +257,50 @@ func (a *app) run(args []string) int {
 }
 
 func (a *app) installPublicKey(publicPath string, remote target) error {
-	key, err := os.Open(publicPath)
+	key, err := readPublicKey(publicPath)
 	if err != nil {
-		return fmt.Errorf("open public key: %w", err)
+		return err
 	}
-	defer key.Close()
 
 	a.info("Uploading public key to %s:%d…", remote.destination, remote.port)
 	a.info("You may be prompted for %s's remote password.", remote.user)
 	fmt.Fprintln(a.out)
 	remoteCommand := `umask 077; mkdir -p "$HOME/.ssh" && touch "$HOME/.ssh/authorized_keys" && chmod 700 "$HOME/.ssh" && chmod 600 "$HOME/.ssh/authorized_keys" && cat >> "$HOME/.ssh/authorized_keys"`
 	args := sshArgs(remote, remote.destination, remoteCommand)
-	return a.runner.run("ssh", args, key, a.out, a.errOut)
+	return a.runner.run(context.Background(), "ssh", args, bytes.NewReader(key), a.out, a.errOut)
+}
+
+func readPublicKey(path string) ([]byte, error) {
+	const maximumPublicKeySize = 64 * 1024
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open public key: %w", err)
+	}
+	defer file.Close()
+
+	contents, err := io.ReadAll(io.LimitReader(file, maximumPublicKeySize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read public key: %w", err)
+	}
+	if len(contents) == 0 {
+		return nil, errors.New("public key is empty")
+	}
+	if len(contents) > maximumPublicKeySize {
+		return nil, errors.New("public key is unexpectedly large")
+	}
+
+	line := contents
+	if bytes.HasSuffix(line, []byte("\r\n")) {
+		line = line[:len(line)-2]
+	} else if bytes.HasSuffix(line, []byte("\n")) {
+		line = line[:len(line)-1]
+	}
+	if len(line) == 0 || bytes.ContainsAny(line, "\r\n") {
+		return nil, errors.New("public key must contain exactly one line")
+	}
+	normalized := append([]byte(nil), line...)
+	return append(normalized, '\n'), nil
 }
 
 func sshArgs(remote target, rest ...string) []string {
@@ -268,10 +332,10 @@ func bitSuffix(bits int) string {
 }
 
 func quoteArgument(value string) string {
-	if !strings.ContainsAny(value, " \t\"'") {
-		return value
+	if runtime.GOOS == "windows" {
+		return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 	}
-	return strconv.Quote(value)
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func escapeConfigPath(value string) string {

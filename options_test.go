@@ -57,3 +57,19 @@ func TestParseOptionsVersionNeedsNoTarget(t *testing.T) {
 		t.Fatal("parseOptions() did not set showVersion")
 	}
 }
+
+func TestParseOptionsRejectsMultilineValues(t *testing.T) {
+	t.Run("comment", func(t *testing.T) {
+		t.Setenv("KEY_DIR", "")
+		if _, err := parseOptions([]string{"-c", "expected\nssh-ed25519 EXTRA unexpected", "alice@host"}, t.TempDir(), io.Discard); err == nil {
+			t.Fatal("parseOptions() unexpectedly accepted a multiline comment")
+		}
+	})
+
+	t.Run("key directory", func(t *testing.T) {
+		t.Setenv("KEY_DIR", "keys\nHost *")
+		if _, err := parseOptions([]string{"alice@host"}, t.TempDir(), io.Discard); err == nil {
+			t.Fatal("parseOptions() unexpectedly accepted a multiline key directory")
+		}
+	})
+}

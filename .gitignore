@@ -2,3 +2,5 @@
 /setup-ssh-key.exe
 /dist/
 *.test
+
+.agents/

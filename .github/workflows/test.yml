@@ -3,20 +3,19 @@ name: test
 on:
   push:
     branches: [main]
-    paths: &ci_paths
-      - "**/*.go"
-      - "go.mod"
-      - "mise.toml"
-      - "mise.lock"
-      - "scripts/**"
-      - ".github/workflows/*.yml"
   pull_request:
     branches: [main]
-    paths: *ci_paths
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      force:
+        description: Run all checks regardless of changed paths
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: test-${{ github.workflow }}-${{ github.ref }}
@@ -31,17 +30,40 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
+      - name: Detect validation-relevant changes
+        if: ${{ !inputs.force && github.event_name != 'workflow_dispatch' }}
+        id: changes
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            validation:
+              - "**/*.go"
+              - "go.mod"
+              - "mise.toml"
+              - "mise.lock"
+              - "scripts/**"
+              - ".github/workflows/**"
+
       - name: Set up Go
+        if: >-
+          inputs.force ||
+          github.event_name == 'workflow_dispatch' ||
+          steps.changes.outputs.validation == 'true'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           # The pinned analysis tools require Go 1.25 or newer. Portability
           # jobs below continue testing the module's declared Go 1.23 minimum.
-          go-version: "1.27.0"
+          go-version: "1.26.5"
           cache: false
 
       - name: Set up mise tools
+        if: >-
+          inputs.force ||
+          github.event_name == 'workflow_dispatch' ||
+          steps.changes.outputs.validation == 'true'
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.8.14
@@ -49,6 +71,10 @@ jobs:
           cache: ${{ github.event_name != 'pull_request' }}
 
       - name: Run repository checks
+        if: >-
+          inputs.force ||
+          github.event_name == 'workflow_dispatch' ||
+          steps.changes.outputs.validation == 'true'
         run: mise run check
 
   portability:
@@ -63,16 +89,41 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
+      - name: Detect validation-relevant changes
+        if: ${{ !inputs.force && github.event_name != 'workflow_dispatch' }}
+        id: changes
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            validation:
+              - "**/*.go"
+              - "go.mod"
+              - "scripts/**"
+              - ".github/workflows/**"
+
       - name: Set up Go
+        if: >-
+          inputs.force ||
+          github.event_name == 'workflow_dispatch' ||
+          steps.changes.outputs.validation == 'true'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: false
 
       - name: Test
+        if: >-
+          inputs.force ||
+          github.event_name == 'workflow_dispatch' ||
+          steps.changes.outputs.validation == 'true'
         run: go test ./...
 
       - name: Build
+        if: >-
+          inputs.force ||
+          github.event_name == 'workflow_dispatch' ||
+          steps.changes.outputs.validation == 'true'
         run: go build .

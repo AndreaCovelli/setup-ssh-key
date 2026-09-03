@@ -56,7 +56,7 @@ jobs:
         with:
           # The pinned analysis tools require Go 1.25 or newer. Portability
           # jobs below continue testing the module's declared Go 1.23 minimum.
-          go-version: "1.26.5"
+          go-version: "1.27.0"
           cache: false
 
       - name: Set up mise tools

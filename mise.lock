@@ -79,7 +79,7 @@ checksum = "sha256:a3911b5e0e1b1053f25ed0675f4c1c6aad1e2bfcf253df2b9be4caabd2edd
 url = "https://dl.google.com/go/go1.27.1.windows-amd64.zip"
 
 [[tools."go:golang.org/x/tools/cmd/deadcode"]]
-version = "0.49.0"
+version = "0.50.0"
 backend = "go:golang.org/x/tools/cmd/deadcode"
 
 [[tools."go:golang.org/x/tools/cmd/goimports"]]

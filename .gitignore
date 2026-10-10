@@ -15,6 +15,7 @@ coverage*.out
 
 # Locally installed agent skills (definitions live in skills-lock.json)
 /.agents/
+/.claude/
 
 # Editor temporary files
 *.swp

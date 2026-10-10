@@ -12,6 +12,12 @@
       "sourceType": "github",
       "skillPath": "skills/github-actions/SKILL.md",
       "computedHash": "a5ce3c39b2c59fdb7fd654bfd3a044960d2f823a33f0c8a4c7a90119b53091f4"
+    },
+    "pr-feedback": {
+      "source": "AndreaCovelli/my-skills",
+      "sourceType": "github",
+      "skillPath": "skills/pr-feedback/SKILL.md",
+      "computedHash": "7d281c042c2970486039d84212ab585b467bc5b475572883038b358862cc6cb4"
     }
   }
 }

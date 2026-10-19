@@ -80,6 +80,9 @@ jobs:
 
   portability:
     name: portability (${{ matrix.os }})
+    # macOS and Windows minutes are billed at a multiple of Linux. Dependency
+    # update PRs skip them; the push to main after merge still runs both.
+    if: ${{ !startsWith(github.head_ref, 'renovate/') }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -129,3 +132,24 @@ jobs:
           github.event_name == 'workflow_dispatch' ||
           steps.changes.outputs.validation == 'true'
         run: go build .
+
+  portability-result:
+    # Required status check: a skipped matrix job reports under its unexpanded
+    # name, so the per-OS checks cannot be required directly.
+    name: portability
+    needs: portability
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check portability results
+        env:
+          RESULT: ${{ needs.portability.result }}
+        run: |
+          case "$RESULT" in
+            success|skipped) ;;
+            *)
+              echo "portability jobs finished with: $RESULT" >&2
+              exit 1
+              ;;
+          esac

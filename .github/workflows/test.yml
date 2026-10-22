@@ -15,68 +15,35 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
 
 concurrency:
   group: test-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate:
+  check:
     name: validate
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          # paths-filter may need to fetch the pre-push commit after a history rewrite.
-          persist-credentials: true
-
-      - name: Detect validation-relevant changes
-        if: ${{ !inputs.force && github.event_name != 'workflow_dispatch' }}
-        id: changes
-        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
-        with:
-          filters: |
-            validation:
-              - "**/*.go"
-              - "go.mod"
-              - "mise.toml"
-              - "mise.lock"
-              - "scripts/**"
-              - ".github/workflows/**"
-
-      - name: Set up Go
-        if: >-
-          inputs.force ||
-          github.event_name == 'workflow_dispatch' ||
-          steps.changes.outputs.validation == 'true'
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          # The pinned analysis tools require Go 1.25 or newer. Portability
-          # jobs below continue testing the module's declared Go 1.23 minimum.
-          go-version: "1.27.2"
-          cache: false
-
-      - name: Set up mise tools
-        if: >-
-          inputs.force ||
-          github.event_name == 'workflow_dispatch' ||
-          steps.changes.outputs.validation == 'true'
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
-        with:
-          version: 2026.10.14
-          install: true
-          cache: ${{ github.event_name != 'pull_request' }}
-
-      - name: Run repository checks
-        if: >-
-          inputs.force ||
-          github.event_name == 'workflow_dispatch' ||
-          steps.changes.outputs.validation == 'true'
-        run: mise run check
+    uses: AndreaCovelli/repo-baseline/.github/workflows/check.yml@a3cd314a40868370e41af02ecf02af60df5614ee # v1.0.1
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      force: ${{ inputs.force == true }}
+      timeout-minutes: 20
+      paths: |
+        **/*.go
+        go.mod
+        mise.toml
+        mise.lock
+        scripts/**
+        .github/workflows/**
+      cache-path: |
+        ~/go/pkg/mod
+        ~/.cache/go-build
+      cache-key-files: |
+        go.sum
+        go.mod
+        mise.lock
 
   portability:
     name: portability (${{ matrix.os }})
@@ -93,15 +60,18 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Push comparisons need the previous commit without an authenticated fetch.
           fetch-depth: 0
-          # paths-filter may need to fetch the pre-push commit after a history rewrite.
-          persist-credentials: true
+          persist-credentials: false
 
+      # A force push discards the previous head, so there is nothing to compare
+      # against: run every check instead, as for manual runs.
       - name: Detect validation-relevant changes
-        if: ${{ !inputs.force && github.event_name != 'workflow_dispatch' }}
+        if: ${{ !inputs.force && !github.event.forced && github.event_name != 'workflow_dispatch' }}
         id: changes
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
+          base: ${{ github.event_name == 'push' && github.ref || '' }}
           filters: |
             validation:
               - "**/*.go"
@@ -110,46 +80,28 @@ jobs:
               - ".github/workflows/**"
 
       - name: Set up Go
-        if: >-
-          inputs.force ||
-          github.event_name == 'workflow_dispatch' ||
-          steps.changes.outputs.validation == 'true'
+        if: steps.changes.outcome == 'skipped' || steps.changes.outputs.validation == 'true'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: false
 
       - name: Test
-        if: >-
-          inputs.force ||
-          github.event_name == 'workflow_dispatch' ||
-          steps.changes.outputs.validation == 'true'
+        if: steps.changes.outcome == 'skipped' || steps.changes.outputs.validation == 'true'
         run: go test ./...
 
       - name: Build
-        if: >-
-          inputs.force ||
-          github.event_name == 'workflow_dispatch' ||
-          steps.changes.outputs.validation == 'true'
+        if: steps.changes.outcome == 'skipped' || steps.changes.outputs.validation == 'true'
         run: go build .
 
-  portability-result:
-    # Required status check: a skipped matrix job reports under its unexpanded
-    # name, so the per-OS checks cannot be required directly.
-    name: portability
-    needs: portability
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
+  validate:
+    name: Validate
+    needs: [check, portability]
+    if: always()
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
-      - name: Check portability results
+      - name: Check CI results
         env:
-          RESULT: ${{ needs.portability.result }}
-        run: |
-          case "$RESULT" in
-            success|skipped) ;;
-            *)
-              echo "portability jobs finished with: $RESULT" >&2
-              exit 1
-              ;;
-          esac
+          NEEDS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success" or .result == "skipped")' <<<"$NEEDS"

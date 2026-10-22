@@ -51,6 +51,10 @@ jobs:
     # update PRs skip them; the push to main after merge still runs both.
     if: ${{ !startsWith(github.head_ref, 'renovate/') }}
     timeout-minutes: 10
+    permissions:
+      contents: read
+      # paths-filter lists pull request files through the API.
+      pull-requests: read
     strategy:
       fail-fast: false
       matrix:

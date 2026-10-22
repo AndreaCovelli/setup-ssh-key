@@ -13,8 +13,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: validate release commit
+    uses: ./.github/workflows/test.yml
+    with:
+      force: true
+    permissions:
+      contents: read
+      pull-requests: read
+
   release:
     name: build and publish
+    needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -40,9 +50,6 @@ jobs:
             echo "Release tags must use semantic versioning, for example v1.2.3." >&2
             exit 1
           fi
-
-      - name: Test
-        run: go test ./...
 
       - name: Build release archives
         env:

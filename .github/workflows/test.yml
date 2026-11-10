@@ -46,14 +46,13 @@ jobs:
             go.mod
             mise.lock
 
-  # macOS and Windows minutes are billed at a multiple of Linux, so these jobs
-  # start only when the Linux check ran: a no-op push, or a push whose tree a
-  # pull request already validated, never reaches them. Dependency update PRs
-  # skip them too.
+  # These jobs start only when the Linux check ran: a no-op push, or a push
+  # whose tree a pull request already validated, never reaches them. Dependency
+  # update PRs run them too, because their push to main reuses the PR result.
   portability:
     name: portability (${{ matrix.os }})
     needs: check
-    if: ${{ needs.check.outputs.relevant == 'true' && !startsWith(github.head_ref, 'renovate/') }}
+    if: ${{ needs.check.outputs.relevant == 'true' }}
     timeout-minutes: 10
     permissions:
       contents: read

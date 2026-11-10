@@ -13,18 +13,59 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  validate:
-    name: validate release commit
-    uses: ./.github/workflows/test.yml
-    with:
-      force: true
+  # The tagged commit already passed Validate on main, so do not test it again.
+  gate:
+    name: Require main Validate
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
     permissions:
+      checks: read
       contents: read
-      pull-requests: read
+    steps:
+      - name: Require the tagged commit to be on main and validated
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          default_branch="$(gh api "repos/$GH_REPO" --jq .default_branch)"
+          relation="$(gh api "repos/$GH_REPO/compare/$default_branch...$RELEASE_SHA" --jq .status)"
+          if [[ "$relation" != identical && "$relation" != behind ]]; then
+            echo "::error::$RELEASE_SHA is not on $default_branch; tag a commit that main has validated"
+            exit 1
+          fi
+          # Validate may still be starting or running when the tag is pushed
+          # right after the merge, so poll briefly.
+          for attempt in $(seq 10); do
+            result="$(
+              gh api "repos/$GH_REPO/commits/$RELEASE_SHA/check-runs?check_name=Validate" \
+                --jq '.check_runs | sort_by(.started_at) | last | if . == null then "missing" else "\(.status) \(.conclusion)" end'
+            )"
+            case "$result" in
+              "completed success")
+                echo "Validate passed on $RELEASE_SHA"
+                exit 0
+                ;;
+              completed*)
+                echo "::error::Validate finished as '${result#completed }' on $RELEASE_SHA"
+                exit 1
+                ;;
+              missing)
+                if (( attempt >= 3 )); then
+                  echo "::error::No Validate check run exists for $RELEASE_SHA; push the commit to main and let CI pass before tagging"
+                  exit 1
+                fi
+                ;;
+            esac
+            sleep 30
+          done
+          echo "::error::Validate did not finish on $RELEASE_SHA within 5 minutes"
+          exit 1
 
   release:
     name: build and publish
-    needs: validate
+    needs: gate
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:

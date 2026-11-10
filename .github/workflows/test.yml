@@ -6,55 +6,57 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
-  workflow_call:
-    inputs:
-      force:
-        description: Run all checks regardless of changed paths
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
 concurrency:
   group: test-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
-    name: validate
-    uses: AndreaCovelli/repo-baseline/.github/workflows/check.yml@a3cd314a40868370e41af02ecf02af60df5614ee # v1.0.1
+    name: Check
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
     permissions:
+      checks: read
       contents: read
       pull-requests: read
-    with:
-      force: ${{ inputs.force == true }}
-      timeout-minutes: 20
-      paths: |
-        **/*.go
-        go.mod
-        mise.toml
-        mise.lock
-        scripts/**
-        .github/workflows/**
-      cache-path: |
-        ~/go/pkg/mod
-        ~/.cache/go-build
-      cache-key-files: |
-        go.sum
-        go.mod
-        mise.lock
+    outputs:
+      relevant: ${{ steps.check.outputs.relevant }}
+    steps:
+      - name: Check
+        id: check
+        uses: AndreaCovelli/repo-baseline/.github/actions/check@a9310352317e707bffc0e031caf29d3c48d7eb97 # v1.1.0
+        with:
+          paths: |
+            **/*.go
+            go.mod
+            go.sum
+            mise.toml
+            mise.lock
+            scripts/**
+            .github/workflows/**
+          cache-path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          cache-key-files: |
+            go.sum
+            go.mod
+            mise.lock
 
+  # macOS and Windows minutes are billed at a multiple of Linux, so these jobs
+  # start only when the Linux check ran: a no-op push, or a push whose tree a
+  # pull request already validated, never reaches them. Dependency update PRs
+  # skip them too.
   portability:
     name: portability (${{ matrix.os }})
-    # macOS and Windows minutes are billed at a multiple of Linux. Dependency
-    # update PRs skip them; the push to main after merge still runs both.
-    if: ${{ !startsWith(github.head_ref, 'renovate/') }}
+    needs: check
+    if: ${{ needs.check.outputs.relevant == 'true' && !startsWith(github.head_ref, 'renovate/') }}
     timeout-minutes: 10
     permissions:
       contents: read
-      # paths-filter lists pull request files through the API.
-      pull-requests: read
     strategy:
       fail-fast: false
       matrix:
@@ -64,45 +66,25 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Push comparisons need the previous commit without an authenticated fetch.
-          fetch-depth: 0
           persist-credentials: false
 
-      # A force push discards the previous head, so there is nothing to compare
-      # against: run every check instead, as for manual runs.
-      - name: Detect validation-relevant changes
-        if: ${{ !inputs.force && !github.event.forced && github.event_name != 'workflow_dispatch' }}
-        id: changes
-        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
-        with:
-          base: ${{ github.event_name == 'push' && github.ref || '' }}
-          filters: |
-            validation:
-              - "**/*.go"
-              - "go.mod"
-              - "scripts/**"
-              - ".github/workflows/**"
-
       - name: Set up Go
-        if: steps.changes.outcome == 'skipped' || steps.changes.outputs.validation == 'true'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: false
 
       - name: Test
-        if: steps.changes.outcome == 'skipped' || steps.changes.outputs.validation == 'true'
         run: go test ./...
 
       - name: Build
-        if: steps.changes.outcome == 'skipped' || steps.changes.outputs.validation == 'true'
         run: go build .
 
   validate:
     name: Validate
     needs: [check, portability]
     if: always()
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:
       - name: Check CI results

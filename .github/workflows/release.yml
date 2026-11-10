@@ -51,16 +51,12 @@ jobs:
                 echo "::error::Validate finished as '${result#completed }' on $RELEASE_SHA"
                 exit 1
                 ;;
-              missing)
-                if (( attempt >= 3 )); then
-                  echo "::error::No Validate check run exists for $RELEASE_SHA; push the commit to main and let CI pass before tagging"
-                  exit 1
-                fi
-                ;;
             esac
+            # A missing run is pending: CI on main may not have started yet.
+            echo "Validate has not finished on $RELEASE_SHA ($result, check $attempt of 10)"
             sleep 30
           done
-          echo "::error::Validate did not finish on $RELEASE_SHA within 5 minutes"
+          echo "::error::No successful Validate on $RELEASE_SHA within 5 minutes. Tag a commit whose CI on main has run, or re-run this workflow once it finishes."
           exit 1
 
   release:

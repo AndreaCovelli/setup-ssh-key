@@ -14,6 +14,13 @@ staticcheck = "2026.2.2"
 description = "Build the setup-ssh-key binary"
 run = "go build -trimpath ."
 
+[tasks.setup]
+description = "Download Go modules and compile the tests, filling the Go caches CI saves"
+run = [
+  "go mod download",
+  "go test -race -run '^$' ./...",
+]
+
 [tasks.test]
 description = "Run the test suite with the race detector"
 run = "go test -race ./..."

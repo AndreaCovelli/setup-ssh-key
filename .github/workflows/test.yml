@@ -28,7 +28,7 @@ jobs:
     steps:
       - name: Check
         id: check
-        uses: AndreaCovelli/repo-baseline/.github/actions/check@a9310352317e707bffc0e031caf29d3c48d7eb97 # v1.1.0
+        uses: AndreaCovelli/repo-baseline/.github/actions/check@8aafc69756399d1cc08b1ddbf79d19af74378eca # v1.1.2
         with:
           paths: |
             **/*.go
@@ -38,6 +38,7 @@ jobs:
             mise.lock
             scripts/**
             .github/workflows/**
+          setup-task: setup
           cache-path: |
             ~/go/pkg/mod
             ~/.cache/go-build
